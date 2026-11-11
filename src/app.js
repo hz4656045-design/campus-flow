@@ -18,7 +18,7 @@ const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 const pinoHttp = require('pino-http');
 
-const config = require('./config');
+const config = require('./config/index.js');
 const logger = require('./utils/logger');
 const routes = require('./routes');
 const audit = require('./middlewares/audit.middleware');
