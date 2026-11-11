@@ -1,0 +1,624 @@
+// =============================================================================
+// Campus Flow — University Management System
+// Prisma Schema (mirrors logical_schema.sql)
+// -----------------------------------------------------------------------------
+// File:    schema.prisma
+// Engine:  PostgreSQL  (datasource provider = "postgresql")
+// Backend: Node.js 18 LTS / Express.js 4.x
+// Naming:  PascalCase models + camelCase fields (TypeScript-idiomatic)
+//          mapped back to snake_case plural table names via @@map / @map,
+//          so the physical PostgreSQL schema stays byte-identical to
+//          logical_schema.sql.
+// -----------------------------------------------------------------------------
+// Usage:
+//   1. pnpm add -D prisma && pnpm add @prisma/client
+//   2. npx prisma generate
+//   3. To sync DB: npx prisma db push   (or  npx prisma migrate dev)
+// -----------------------------------------------------------------------------
+// ⚠ Prisma does NOT natively express the following features that exist in
+//    logical_schema.sql. They are added via a companion migration SQL file
+//    (run after `prisma migrate dev`):
+//      - CHECK constraints          (e.g. credit_hours BETWEEN 1 AND 8)
+//      - Partial UNIQUE indexes     (e.g. one active enrollment per section)
+//      - GiST exclusion constraints (room/instructor double-booking)
+//      - BEFORE-INSERT/UPDATE trigger (validate grade score <= max_score)
+//      - Auto-maintained updated_at trigger (note: Prisma's @updatedAt
+//        handles the *client* path; the DB trigger is still needed for
+//        out-of-band writes / raw SQL updates)
+//      - pgcrypto, btree_gist extensions
+//    See ./prisma_migration_extras.sql for the canonical post-migration SQL.
+// =============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  binaryTargets   = ["native"]
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  
+  extensions = [pgcrypto, btree_gist(map: "btree_gist")]
+}
+
+// =============================================================================
+// 1. ENUMS  (mirror of the *_enum types in logical_schema.sql §1)
+// =============================================================================
+
+enum DegreeLevel {
+  undergraduate
+  graduate
+  doctoral
+}
+
+enum CourseLevel {
+  undergraduate
+  graduate
+  doctoral
+}
+
+enum FacultyTitle {
+  lecturer
+  assistant_prof // @map not allowed on enum values; app layer maps names
+  associate_prof
+  full_prof
+}
+
+enum StudentStatus {
+  active
+  suspended
+  graduated
+  withdrawn
+}
+
+enum SemesterStatus {
+  planned
+  open
+  closed
+  archived
+}
+
+enum RoomType {
+  lecture
+  lab
+  seminar
+  auditorium
+}
+
+enum SectionStatus {
+  planned
+  open
+  closed
+  cancelled
+}
+
+enum EnrollmentStatus {
+  draft
+  enrolled
+  waitlisted
+  dropped
+  completed
+  failed
+}
+
+enum HoldType {
+  financial
+  academic
+  disciplinary
+  probation
+  advisor
+}
+
+enum AssessmentType {
+  quiz
+  assignment
+  midterm
+  final
+  project
+  lab
+}
+
+enum LetterGrade {
+  A
+  B
+  C
+  D
+  F
+}
+
+// =============================================================================
+// 2. IDENTITY & RBAC
+// =============================================================================
+
+model User {
+  id               BigInt    @id @default(autoincrement())
+  email            String    @unique @db.VarChar(255)
+  passwordHash     String    @map("password_hash") @db.VarChar(255)
+  firstName        String    @map("first_name") @db.VarChar(100)
+  lastName         String    @map("last_name") @db.VarChar(100)
+  phone            String?   @db.VarChar(30)
+  nationalId       String?   @map("national_id") @db.VarChar(50)
+  isActive         Boolean   @default(true) @map("is_active")
+  mfaSecret        String?   @map("mfa_secret") @db.VarChar(64)
+  lastLoginAt      DateTime? @map("last_login_at") @db.Timestamptz
+  failedLoginCount Int       @default(0) @map("failed_login_count") @db.SmallInt
+  lockedUntil      DateTime? @map("locked_until") @db.Timestamptz
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations — one user can be many things
+  userRoles           UserRole[]
+  userRoleAssignments UserRole[]         @relation("UserRoleAssignedBy")
+  facultyMember       FacultyMember?
+  student             Student?
+  placedHolds         RegistrationHold[] @relation("HoldPlacedBy")
+  gradedBy            Grade[]            @relation("GradeGradedBy")
+  finalizedBy         FinalGrade[]       @relation("FinalGradeFinalizedBy")
+  auditLogs           AuditLog[]
+
+  // Indexes (FK side)
+  @@index([isActive])
+  @@map("users")
+}
+
+model Role {
+  id          Int      @id @default(autoincrement()) @db.SmallInt
+  code        String   @unique @db.VarChar(32)
+  displayName String   @map("display_name") @db.VarChar(64)
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  userRoles       UserRole[]
+  rolePermissions RolePermission[]
+
+  @@map("roles")
+}
+
+model UserRole {
+  userId       BigInt   @map("user_id")
+  roleId       Int      @map("role_id") @db.SmallInt
+  assignedAt   DateTime @default(now()) @map("assigned_at") @db.Timestamptz
+  assignedById BigInt?  @map("assigned_by")
+
+  user       User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role       Role  @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  assignedBy User? @relation("UserRoleAssignedBy", fields: [assignedById], references: [id], onDelete: SetNull)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+model Permission {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique @db.VarChar(64)
+  resource  String   @db.VarChar(32)
+  action    String   @db.VarChar(32)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       Int @map("role_id") @db.SmallInt
+  permissionId Int @map("permission_id")
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+// =============================================================================
+// 3. UNIVERSITY STRUCTURE
+// =============================================================================
+
+model Faculty {
+  id            Int       @id @default(autoincrement())
+  code          String    @unique @db.VarChar(16)
+  name          String    @unique @db.VarChar(128)
+  deanId        BigInt?   @map("dean_id")
+  establishedAt DateTime? @map("established_at") @db.Date
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  departments Department[]
+  dean        FacultyMember? @relation("FacultyDean", fields: [deanId], references: [id], onDelete: SetNull)
+
+  @@map("faculties")
+}
+
+model Department {
+  id        Int      @id @default(autoincrement())
+  facultyId Int      @map("faculty_id")
+  code      String   @unique @db.VarChar(16)
+  name      String   @db.VarChar(128)
+  headId    BigInt?  @map("head_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  faculty        Faculty         @relation(fields: [facultyId], references: [id], onDelete: Restrict)
+  head           FacultyMember?  @relation("DepartmentHead", fields: [headId], references: [id], onDelete: SetNull)
+  majors         Major[]
+  courses        Course[]
+  facultyMembers FacultyMember[] @relation("DepartmentMembers")
+
+  @@index([facultyId])
+  @@map("departments")
+}
+
+model Major {
+  id           Int         @id @default(autoincrement())
+  departmentId Int         @map("department_id")
+  code         String      @unique @db.VarChar(16)
+  name         String      @db.VarChar(128)
+  degreeLevel  DegreeLevel @map("degree_level")
+  createdAt    DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime    @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  students   Student[]
+
+  @@index([departmentId])
+  @@map("majors")
+}
+
+// =============================================================================
+// 4. PEOPLE
+// =============================================================================
+
+model FacultyMember {
+  id             BigInt       @id @default(autoincrement())
+  userId         BigInt       @unique @map("user_id")
+  departmentId   Int          @map("department_id")
+  employeeNumber String       @unique @map("employee_number") @db.VarChar(32)
+  academicTitle  FacultyTitle @map("academic_title")
+  hireDate       DateTime     @map("hire_date") @db.Date
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  // NOTE on deanOf / headOf: the underlying SQL does not declare UNIQUE on
+  // faculties.dean_id or departments.head_id, so technically a faculty
+  // member could be dean/head of N entities. If you want strict 1:1, add
+  // @unique to deanId / headId (and a matching UNIQUE constraint in SQL).
+  user          User           @relation(fields: [userId], references: [id], onDelete: Restrict)
+  department    Department     @relation("DepartmentMembers", fields: [departmentId], references: [id], onDelete: Restrict)
+  advisees      Student[]      @relation("StudentAdvisor")
+  classSections ClassSection[]
+  deanOf        Faculty[]      @relation("FacultyDean")
+  headOf        Department[]   @relation("DepartmentHead")
+
+  @@index([departmentId])
+  @@map("faculty_members")
+}
+
+model Student {
+  id                 BigInt        @id @default(autoincrement())
+  userId             BigInt        @unique @map("user_id")
+  majorId            Int           @map("major_id")
+  studentNumber      String        @unique @map("student_number") @db.VarChar(32)
+  admissionDate      DateTime      @map("admission_date") @db.Date
+  expectedGraduation DateTime?     @map("expected_graduation") @db.Date
+  status             StudentStatus @default(active)
+  advisorId          BigInt?       @map("advisor_id")
+  creditCap          Int           @default(21) @map("credit_cap") @db.SmallInt
+  createdAt          DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  user              User               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  major             Major              @relation(fields: [majorId], references: [id], onDelete: Restrict)
+  advisor           FacultyMember?     @relation("StudentAdvisor", fields: [advisorId], references: [id], onDelete: SetNull)
+  enrollments       Enrollment[]
+  registrationHolds RegistrationHold[]
+  academicRecords   AcademicRecord[]
+
+  @@index([majorId])
+  @@index([advisorId])
+  @@index([status])
+  @@index([userId])
+  @@map("students")
+}
+
+// =============================================================================
+// 5. COURSE CATALOG
+// =============================================================================
+
+model Course {
+  id           Int         @id @default(autoincrement())
+  departmentId Int         @map("department_id")
+  code         String      @unique @db.VarChar(16)
+  title        String      @db.VarChar(200)
+  description  String?
+  creditHours  Int         @map("credit_hours") @db.SmallInt // CHECK 1..8 → migration
+  level        CourseLevel
+  isActive     Boolean     @default(true) @map("is_active")
+  createdAt    DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime    @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  department            Department     @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  classSections         ClassSection[]
+  prerequisitesForThis  Prerequisite[] @relation("CourseRequires") // this course → its prereqs
+  prerequisitesAsPrereq Prerequisite[] @relation("PrerequisiteFor") // courses that list this as a prereq
+
+  @@index([departmentId])
+  @@index([level])
+  @@index([isActive])
+  @@map("courses")
+}
+
+model Prerequisite {
+  courseId             Int         @map("course_id")
+  prerequisiteCourseId Int         @map("prerequisite_course_id")
+  minGrade             LetterGrade @default(C) @map("min_grade")
+  createdAt            DateTime    @default(now()) @map("created_at") @db.Timestamptz
+
+  course             Course @relation("CourseRequires", fields: [courseId], references: [id], onDelete: Cascade)
+  prerequisiteCourse Course @relation("PrerequisiteFor", fields: [prerequisiteCourseId], references: [id], onDelete: Cascade)
+
+  @@id([courseId, prerequisiteCourseId]) // composite PK
+  @@index([prerequisiteCourseId])
+  // CHECK (course_id <> prerequisite_course_id) → migration
+  @@map("prerequisites")
+}
+
+// =============================================================================
+// 6. SEMESTER & SCHEDULING
+// =============================================================================
+
+model Semester {
+  id                Int            @id @default(autoincrement())
+  code              String         @unique @db.VarChar(16)
+  name              String         @db.VarChar(64)
+  startDate         DateTime       @map("start_date") @db.Date
+  endDate           DateTime       @map("end_date") @db.Date
+  registrationStart DateTime       @map("registration_start") @db.Timestamptz
+  registrationEnd   DateTime       @map("registration_end") @db.Timestamptz
+  status            SemesterStatus @default(planned)
+  createdAt         DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  classSections   ClassSection[]
+  academicRecords AcademicRecord[]
+
+  // Partial unique: at most one semester with status='open' → migration
+  @@index([status])
+  @@index([startDate, endDate])
+  @@map("semesters")
+}
+
+model Building {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique @db.VarChar(16)
+  name      String   @db.VarChar(128)
+  location  String?  @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  rooms Room[]
+
+  @@map("buildings")
+}
+
+model Room {
+  id         Int      @id @default(autoincrement())
+  buildingId Int      @map("building_id")
+  code       String   @db.VarChar(16)
+  name       String   @db.VarChar(64)
+  capacity   Int      @db.SmallInt // CHECK capacity >= 1 → migration
+  type       RoomType
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  building      Building       @relation(fields: [buildingId], references: [id], onDelete: Restrict)
+  classSections ClassSection[]
+
+  @@unique([buildingId, code])
+  @@index([buildingId])
+  @@index([type])
+  @@map("rooms")
+}
+
+model ClassSection {
+  id            Int           @id @default(autoincrement())
+  courseId      Int           @map("course_id")
+  semesterId    Int           @map("semester_id")
+  instructorId  BigInt        @map("instructor_id")
+  sectionNumber String        @map("section_number") @db.VarChar(8)
+  capacity      Int           @db.SmallInt // CHECK capacity >= 1 → migration
+  roomId        Int?          @map("room_id")
+  status        SectionStatus @default(planned)
+  passingGrade  LetterGrade   @default(D) @map("passing_grade")
+  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  course         Course          @relation(fields: [courseId], references: [id], onDelete: Restrict)
+  semester       Semester        @relation(fields: [semesterId], references: [id], onDelete: Restrict)
+  instructor     FacultyMember   @relation(fields: [instructorId], references: [id], onDelete: Restrict)
+  room           Room?           @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  classSchedules ClassSchedule[]
+  enrollments    Enrollment[]
+  assessments    Assessment[]
+
+  @@unique([courseId, semesterId, sectionNumber])
+  @@index([courseId])
+  @@index([semesterId])
+  @@index([instructorId])
+  @@index([roomId])
+  @@index([status])
+  @@index([semesterId, courseId])
+  @@map("class_sections")
+}
+
+model ClassSchedule {
+  id             Int      @id @default(autoincrement())
+  classSectionId Int      @map("class_section_id")
+  dayOfWeek      Int      @map("day_of_week") @db.SmallInt // CHECK 1..7 → migration
+  startTime      DateTime @map("start_time") @db.Time
+  endTime        DateTime @map("end_time") @db.Time // CHECK end_time > start_time → migration
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  classSection ClassSection @relation(fields: [classSectionId], references: [id], onDelete: Cascade)
+
+  @@index([classSectionId])
+  @@map("class_schedules")
+}
+
+// =============================================================================
+// 7. ENROLLMENT
+// =============================================================================
+
+model Enrollment {
+  id             BigInt           @id @default(autoincrement())
+  studentId      BigInt           @map("student_id")
+  classSectionId Int              @map("class_section_id")
+  status         EnrollmentStatus @default(draft)
+  enrolledAt     DateTime         @default(now()) @map("enrolled_at") @db.Timestamptz
+  droppedAt      DateTime?        @map("dropped_at") @db.Timestamptz
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  student      Student      @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  classSection ClassSection @relation(fields: [classSectionId], references: [id], onDelete: Restrict)
+  grades       Grade[]
+  finalGrades  FinalGrade[]
+
+  // Partial unique: at most one ACTIVE enrollment per (student, section)
+  // → migration (CREATE UNIQUE INDEX ... WHERE status NOT IN (...))
+  @@index([studentId])
+  @@index([classSectionId])
+  @@index([status])
+  @@index([studentId, status])
+  @@map("enrollments")
+}
+
+model RegistrationHold {
+  id         BigInt    @id @default(autoincrement())
+  studentId  BigInt    @map("student_id")
+  holdType   HoldType  @map("hold_type")
+  reason     String
+  placedById BigInt    @map("placed_by")
+  heldUntil  DateTime  @map("held_until") @db.Timestamptz
+  releasedAt DateTime? @map("released_at") @db.Timestamptz
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  student  Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  placedBy User    @relation("HoldPlacedBy", fields: [placedById], references: [id], onDelete: Restrict)
+
+  @@index([studentId])
+  // Partial index on active holds → migration
+  @@map("registration_holds")
+}
+
+// =============================================================================
+// 8. GRADING, ASSESSMENTS & ACADEMIC PERFORMANCE
+// =============================================================================
+
+model Assessment {
+  id             Int            @id @default(autoincrement())
+  classSectionId Int            @map("class_section_id")
+  title          String         @db.VarChar(128)
+  type           AssessmentType
+  maxScore       Decimal        @map("max_score") @db.Decimal(6, 2) // CHECK > 0 → migration
+  weight         Decimal        @db.Decimal(5, 2) // CHECK 0..100 → migration
+  dueDate        DateTime?      @map("due_date") @db.Timestamptz
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  classSection ClassSection @relation(fields: [classSectionId], references: [id], onDelete: Cascade)
+  grades       Grade[]
+
+  @@index([classSectionId])
+  @@map("assessments")
+}
+
+model Grade {
+  id           BigInt   @id @default(autoincrement())
+  enrollmentId BigInt   @map("enrollment_id")
+  assessmentId Int      @map("assessment_id")
+  score        Decimal  @db.Decimal(6, 2) // CHECK 0 <= score <= max_score → trigger
+  gradedById   BigInt   @map("graded_by")
+  gradedAt     DateTime @default(now()) @map("graded_at") @db.Timestamptz
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  enrollment Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  gradedBy   User       @relation("GradeGradedBy", fields: [gradedById], references: [id], onDelete: Restrict)
+
+  @@unique([enrollmentId, assessmentId])
+  @@index([enrollmentId])
+  @@index([assessmentId])
+  @@index([gradedById])
+  @@map("grades")
+}
+
+model FinalGrade {
+  id            BigInt      @id @default(autoincrement())
+  enrollmentId  BigInt      @map("enrollment_id")
+  numericGrade  Decimal     @map("numeric_grade") @db.Decimal(5, 2) // CHECK 0..100 → migration
+  letterGrade   LetterGrade @map("letter_grade")
+  gpaPoints     Decimal     @map("gpa_points") @db.Decimal(3, 2) // CHECK 0..4 → migration
+  isCorrection  Boolean     @default(false) @map("is_correction")
+  finalizedById BigInt      @map("finalized_by")
+  finalizedAt   DateTime    @default(now()) @map("finalized_at") @db.Timestamptz
+
+  enrollment  Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Restrict)
+  finalizedBy User       @relation("FinalGradeFinalizedBy", fields: [finalizedById], references: [id], onDelete: Restrict)
+
+  @@index([enrollmentId])
+  @@index([letterGrade])
+  @@map("final_grades")
+}
+
+model AcademicRecord {
+  id               BigInt   @id @default(autoincrement())
+  studentId        BigInt   @map("student_id")
+  semesterId       Int      @map("semester_id")
+  semesterGpa      Decimal  @map("semester_gpa") @db.Decimal(4, 3) // CHECK 0..4 → migration
+  cumulativeGpa    Decimal  @map("cumulative_gpa") @db.Decimal(4, 3) // CHECK 0..4 → migration
+  creditsAttempted Int      @map("credits_attempted") @db.SmallInt
+  creditsEarned    Int      @map("credits_earned") @db.SmallInt // CHECK earned <= attempted → migration
+  computedAt       DateTime @default(now()) @map("computed_at") @db.Timestamptz
+
+  student  Student  @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  semester Semester @relation(fields: [semesterId], references: [id], onDelete: Restrict)
+
+  @@unique([studentId, semesterId])
+  @@index([studentId])
+  @@index([semesterId])
+  @@map("academic_records")
+}
+
+// =============================================================================
+// 9. AUDIT
+// =============================================================================
+
+model AuditLog {
+  id           BigInt   @id @default(autoincrement())
+  userId       BigInt?  @map("user_id")
+  roleSnapshot String?  @map("role_snapshot")
+  endpoint     String   @db.VarChar(255)
+  method       String   @db.VarChar(8) // CHECK in ('GET','POST','PUT','PATCH','DELETE') → migration
+  payloadHash  String?  @map("payload_hash") @db.Char(64)
+  // ip column is INET in PostgreSQL; Prisma has no native INET scalar.
+  // Use String and validate at the app layer (or Unsupported("inet")).
+  ip           String?  @db.VarChar(45)
+  userAgent    String?
+  result       String   @db.VarChar(16) // CHECK in ('success','failure','denied') → migration
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([createdAt])
+  @@index([endpoint])
+  @@index([result])
+  @@map("audit_logs")
+}
