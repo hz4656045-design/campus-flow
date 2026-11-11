@@ -9,14 +9,18 @@ const prisma = require('../config/database');
 const config = require('../config');
 const ApiError = require('../utils/ApiError');
 const asyncHandler = require('../utils/asyncHandler');
+const toBigInt = require('../utils/toBigInt');
 
 /**
  * Decode the access token and hydrate the user's roles + permissions.
  * Returns a lean object — never the password hash.
+ *
+ * `userId` may arrive as a string (JWT `sub`) or a bigint (from req.user.id),
+ * so it is normalised with toBigInt before the Prisma lookup.
  */
 async function hydrateUser(userId) {
   const user = await prisma.user.findUnique({
-    where: { id: userId },
+    where: { id: toBigInt(userId) },
     select: {
       id: true,
       email: true,

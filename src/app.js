@@ -2,14 +2,18 @@
  * Express app composition.
  *
  * Pipeline order matters:
- *   helmet   → security headers
- *   cors     → CORS policy
- *   pino-http→ structured request logging
+ *   trust proxy → real client IP behind nginx / load balancer
+ *   helmet      → security headers
+ *   cors        → CORS policy (allow-list from CORS_ORIGINS)
+ *   pino-http   → structured request logging (before parsers, so bad bodies are logged too)
+ *   rate-limit  → cheap abuse guard on /api (before body parsing)
  *   express.json + cookie-parser → body / cookie parsing
- *   rate-limit → basic abuse guard on /api
- *   audit → mutation logging (after auth so userId is populated where possible)
+ *   health probes (no auth, no audit, no rate limit)
+ *   audit       → mutation logging
  *   /api routes
  *   404 + errorHandler
+ *
+ * NOTE: this file lives in src/, so every require below is relative to src/.
  */
 const express = require('express');
 const helmet = require('helmet');
@@ -18,7 +22,8 @@ const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 const pinoHttp = require('pino-http');
 
-const config = require('./config/index.js');
+const config = require('./config');
+const prisma = require('./config/database');
 const logger = require('./utils/logger');
 const routes = require('./routes');
 const audit = require('./middlewares/audit.middleware');
@@ -27,21 +32,41 @@ const errorHandler = require('./middlewares/error.middleware');
 
 const app = express();
 
-// --- Security & parsing ---
+if (config.trustProxy) {
+  app.set('trust proxy', config.trustProxy);
+}
+
+// --- Security ---
 app.use(helmet());
-app.use(cors({ origin: true, credentials: true }));
-app.use(express.json({ limit: '1mb' }));
-app.use(cookieParser());
+app.use(
+  cors({
+    // Production: strict allow-list. Development with no list: reflect origin.
+    origin: config.corsOrigins.length > 0 ? config.corsOrigins : !config.isProd,
+    credentials: true,
+  }),
+);
 
 // --- Logging ---
 app.use(
   pinoHttp({
     logger,
     autoLogging: {
-      ignorePaths: ['/health/live', '/health/ready'],
+      ignore: (req) => req.url === '/health/live' || req.url === '/health/ready',
     },
   }),
 );
+
+// --- Health probes (no auth, no audit, no rate limit) ---
+app.get('/health/live', (_req, res) => res.json({ status: 'alive' }));
+app.get('/health/ready', async (req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ status: 'ready', database: 'up' });
+  } catch (err) {
+    req.log.error({ err }, 'Readiness check failed');
+    res.status(503).json({ status: 'not_ready', database: 'down' });
+  }
+});
 
 // --- Rate limiting (per-IP, applied to /api) ---
 app.use(
@@ -55,19 +80,12 @@ app.use(
   }),
 );
 
-// --- Health probes (no auth, no audit) ---
-app.get('/health/live', (_req, res) => res.json({ status: 'alive' }));
-app.get('/health/ready', async (_req, res) => {
-  try {
-    const prisma = require('./config/database');
-    await prisma.$queryRaw`SELECT 1`;
-    res.json({ status: 'ready', database: 'up' });
-  } catch (err) {
-    res.status(503).json({ status: 'not_ready', database: 'down', error: err.message });
-  }
-});
+// --- Parsing ---
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: false, limit: '1mb' }));
+app.use(cookieParser());
 
-// --- Audit (mutations only; runs after auth middleware attaches req.user) ---
+// --- Audit (mutations only) ---
 app.use('/api', audit);
 
 // --- API routes ---

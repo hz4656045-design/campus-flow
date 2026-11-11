@@ -18,8 +18,8 @@ const login = asyncHandler(async (req, res) => {
   const { accessToken, refreshToken, user } = await authService.login(req.body);
   res.cookie('refreshToken', refreshToken, {
     httpOnly: true,
-    secure: config.jwt.cookie.secure,
-    sameSite: config.jwt.cookie.sameSite,
+    secure: config.cookie.secure,
+    sameSite: config.cookie.sameSite,
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   });
   res.json({ accessToken, user });
@@ -31,8 +31,8 @@ const refresh = asyncHandler(async (req, res) => {
   const { accessToken, refreshToken: newRt, user } = await authService.refresh(refreshToken);
   res.cookie('refreshToken', newRt, {
     httpOnly: true,
-    secure: config.jwt.cookie.secure,
-    sameSite: config.jwt.cookie.sameSite,
+    secure: config.cookie.secure,
+    sameSite: config.cookie.sameSite,
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
   res.json({ accessToken, user });

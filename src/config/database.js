@@ -1,36 +1,43 @@
 /**
  * Prisma Client singleton.
  *
- * Re-use one client across the entire process:
- *   - one connection pool
- *   - one prepared-statement cache
+ * Usage anywhere in the app:
+ *   const prisma = require('../config/database');
+ *   const users = await prisma.user.findMany();
  *
- * In development, attach the client to globalThis so nodemon restarts
- * don't pile up extra connections.
+ * Why a singleton:
+ *   Every `new PrismaClient()` opens its own connection pool. Creating one per
+ *   file (or one per nodemon reload) exhausts PostgreSQL connections quickly.
+ *   Node's require cache already gives us one instance per process; the
+ *   globalThis guard additionally survives dev hot-reloads.
+ *
+ * Lifecycle (connect on boot / disconnect on shutdown) lives in server.js.
  */
 const { PrismaClient } = require('@prisma/client');
+const config = require('./index'); // guarantees .env is loaded BEFORE the client is built
 
-const config = require('./index');
-const logger = require('../utils/logger');
+/**
+ * Our schema uses BigInt ids (users, students, enrollments, ...).
+ * JSON.stringify cannot serialize BigInt, so `res.json(user)` would throw
+ * "TypeError: Do not know how to serialize a BigInt". Serialize them as strings.
+ */
+if (typeof BigInt.prototype.toJSON !== 'function') {
+  // eslint-disable-next-line no-extend-native
+  BigInt.prototype.toJSON = function toJSON() {
+    return this.toString();
+  };
+}
+
+const globalForPrisma = globalThis;
 
 const prisma =
-  global.__prisma ||
+  globalForPrisma.__campusFlowPrisma ||
   new PrismaClient({
-    log: config.isDev ? ['query', 'warn', 'error'] : ['warn', 'error'],
-    datasources: { db: { url: config.database.url } },
+    log: config.isDev ? ['warn', 'error'] : ['error'],
   });
 
-if (config.isDev) {
-  global.__prisma = prisma;
-
-  // Graceful shutdown — close the pool when the process exits.
-  const shutdown = async (signal) => {
-    logger.info({ signal }, 'Prisma client disconnecting…');
-    await prisma.$disconnect();
-    process.exit(0);
-  };
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
+if (!config.isProd) {
+  globalForPrisma.__campusFlowPrisma = prisma;
 }
 
 module.exports = prisma;

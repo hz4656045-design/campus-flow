@@ -9,34 +9,35 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
+    "postinstall": "prisma generate --schema prisma/schema.prisma",
     "prisma:generate": "prisma generate --schema prisma/schema.prisma",
     "prisma:push": "prisma db push --schema prisma/schema.prisma",
     "prisma:migrate": "prisma migrate dev --schema prisma/schema.prisma",
     "prisma:studio": "prisma studio --schema prisma/schema.prisma",
     "prisma:seed": "node prisma/seed.js",
-    "db:extras": "psql \"$DATABASE_URL\" -f prisma/migration_extras.sql",
+    "db:extras": "psql \"$DATABASE_URL\" -f prisma/prisma_migration_extras.sql",
     "lint": "eslint .",
     "test": "echo \"Tests not configured yet\" && exit 0"
   },
   "dependencies": {
-    "@prisma/client": "^6.19.0",
+    "@prisma/client": "^6.19.3",
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.7",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.21.0",
-    "express-rate-limit": "^7.4.0",
-    "helmet": "^8.0.0",
+    "cors": "^2.8.6",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.3",
+    "express-rate-limit": "^7.5.1",
+    "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.2",
-    "pino": "^9.5.0",
-    "pino-http": "^10.3.0",
+    "pino": "^9.14.0",
+    "pino-http": "^10.5.0",
     "pino-pretty": "^13.2.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "eslint": "^9.13.0",
-    "nodemon": "^3.1.7",
-    "prisma": "^6.19.0"
+    "nodemon": "^3.1.14",
+    "prisma": "^6.19.3"
   },
   "engines": {
     "node": ">=18.0.0"

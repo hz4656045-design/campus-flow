@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const prisma = require('../config/database');
 const config = require('../config');
 const ApiError = require('../utils/ApiError');
+const toBigInt = require('../utils/toBigInt');
 
 const PUBLIC_FIELDS = {
   id: true,
@@ -40,7 +41,7 @@ async function list({ page = 1, pageSize = 25, search } = {}) {
 
 async function getById(id) {
   const user = await prisma.user.findUnique({
-    where: { id: BigInt(id) },
+    where: { id: toBigInt(id) },
     select: PUBLIC_FIELDS,
   });
   if (!user) throw ApiError.notFound('USER_NOT_FOUND', `User ${id} not found`);
@@ -53,7 +54,7 @@ async function create({ email, password, firstName, lastName, phone, roleIds = [
     throw ApiError.conflict('EMAIL_TAKEN', `Email ${email} already registered`);
   }
 
-  const passwordHash = await bcrypt.hash(password, config.bcrypt.cost);
+  const passwordHash = await bcrypt.hash(password, config.bcryptCost);
 
   const user = await prisma.user.create({
     data: {
@@ -72,12 +73,12 @@ async function create({ email, password, firstName, lastName, phone, roleIds = [
 }
 
 async function update(id, { email, firstName, lastName, phone, isActive, roleIds }) {
-  const existing = await prisma.user.findUnique({ where: { id: BigInt(id) } });
+  const existing = await prisma.user.findUnique({ where: { id: toBigInt(id) } });
   if (!existing) throw ApiError.notFound('USER_NOT_FOUND', `User ${id} not found`);
 
   // Role sync: replace all assignments
   const user = await prisma.user.update({
-    where: { id: BigInt(id) },
+    where: { id: toBigInt(id) },
     data: {
       email,
       firstName,
@@ -101,10 +102,10 @@ async function update(id, { email, firstName, lastName, phone, isActive, roleIds
 }
 
 async function softDelete(id) {
-  const existing = await prisma.user.findUnique({ where: { id: BigInt(id) } });
+  const existing = await prisma.user.findUnique({ where: { id: toBigInt(id) } });
   if (!existing) throw ApiError.notFound('USER_NOT_FOUND', `User ${id} not found`);
   return prisma.user.update({
-    where: { id: BigInt(id) },
+    where: { id: toBigInt(id) },
     data: { isActive: false },
     select: { id: true, isActive: true },
   });

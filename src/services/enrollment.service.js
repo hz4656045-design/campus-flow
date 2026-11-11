@@ -17,6 +17,7 @@
  */
 const prisma = require('../config/database');
 const ApiError = require('../utils/ApiError');
+const toBigInt = require('../utils/toBigInt');
 
 const ACTIVE_STATUSES = ['draft', 'enrolled', 'waitlisted'];
 const TERMINAL_STATUSES = ['dropped', 'completed', 'failed'];
@@ -25,7 +26,7 @@ const TERMINAL_STATUSES = ['dropped', 'completed', 'failed'];
 async function loadEnrollmentContext(studentId, sectionId) {
   const ctx = await prisma.$transaction([
     prisma.student.findUnique({
-      where: { id: BigInt(studentId) },
+      where: { id: toBigInt(studentId) },
       include: {
         registrationHolds: {
           where: { releasedAt: null, heldUntil: { gt: new Date() } },
@@ -89,7 +90,7 @@ async function checkScheduleConflict(studentId, section) {
       classSection: {
         semesterId: section.semesterId,
         enrollments: {
-          some: { studentId: BigInt(studentId), status: { in: ACTIVE_STATUSES } },
+          some: { studentId: toBigInt(studentId), status: { in: ACTIVE_STATUSES } },
         },
       },
     },
@@ -117,7 +118,7 @@ function timeOverlap(s1, e1, s2, e2) {
 async function currentCredits(studentId, semesterId) {
   const rows = await prisma.enrollment.findMany({
     where: {
-      studentId: BigInt(studentId),
+      studentId: toBigInt(studentId),
       status: { in: ACTIVE_STATUSES },
       classSection: { semesterId: Number(semesterId) },
     },
@@ -171,17 +172,17 @@ async function enroll(studentId, sectionId) {
 
   // 6. Capacity (enrolled vs waitlisted)
   const enrolledCount = section.enrollments.filter(
-    (e) => e.studentId !== BigInt(studentId),
+    (e) => e.studentId !== toBigInt(studentId),
   ).length;
   const isFull = enrolledCount >= section.capacity;
 
   // 7. Create or upgrade
   const enrollment = await prisma.enrollment.upsert({
     where: {
-      studentId_classSectionId: { studentId: BigInt(studentId), classSectionId: Number(sectionId) },
+      studentId_classSectionId: { studentId: toBigInt(studentId), classSectionId: Number(sectionId) },
     },
     create: {
-      studentId: BigInt(studentId),
+      studentId: toBigInt(studentId),
       classSectionId: Number(sectionId),
       status: isFull ? 'waitlisted' : 'enrolled',
       enrolledAt: new Date(),
@@ -200,11 +201,11 @@ async function enroll(studentId, sectionId) {
 /** Drop a section before the semester's end date. */
 async function drop(studentId, enrollmentId) {
   const enr = await prisma.enrollment.findUnique({
-    where: { id: BigInt(enrollmentId) },
+    where: { id: toBigInt(enrollmentId) },
     include: { classSection: { include: { semester: true } } },
   });
   if (!enr) throw ApiError.notFound('ENROLLMENT_NOT_FOUND', `Enrollment ${enrollmentId} not found`);
-  if (enr.studentId !== BigInt(studentId)) {
+  if (enr.studentId !== toBigInt(studentId)) {
     // faculty/registrar override handled in the route layer via RBAC
     throw ApiError.forbidden('NOT_OWNER', 'Cannot drop another student\'s enrollment');
   }
@@ -213,7 +214,7 @@ async function drop(studentId, enrollmentId) {
   }
 
   const updated = await prisma.enrollment.update({
-    where: { id: BigInt(enrollmentId) },
+    where: { id: toBigInt(enrollmentId) },
     data: { status: 'dropped', droppedAt: new Date() },
   });
 
@@ -241,7 +242,7 @@ async function promoteWaitlist(classSectionId) {
 async function listForStudent(studentId, { semesterId, status } = {}) {
   return prisma.enrollment.findMany({
     where: {
-      studentId: BigInt(studentId),
+      studentId: toBigInt(studentId),
       ...(semesterId ? { classSection: { semesterId: Number(semesterId) } } : {}),
       ...(status ? { status } : {}),
     },

@@ -11,6 +11,7 @@ const prisma = require('../config/database');
 const ApiError = require('../utils/ApiError');
 const gradeScale = require('../utils/gradeScale');
 const { computeSemesterGpa, computeCumulativeGpa } = require('../utils/gpaCalculator');
+const toBigInt = require('../utils/toBigInt');
 
 // --- Assessments -----------------------------------------------------------
 async function listAssessments(classSectionId) {
@@ -43,13 +44,13 @@ async function createAssessment({
  */
 async function enterGrade({ enrollmentId, assessmentId, score, gradedBy }) {
   const enr = await prisma.enrollment.findUnique({
-    where: { id: BigInt(enrollmentId) },
+    where: { id: toBigInt(enrollmentId) },
     include: { classSection: { select: { instructorId: true, status: true } } },
   });
   if (!enr) throw ApiError.notFound('ENROLLMENT_NOT_FOUND', `Enrollment ${enrollmentId} not found`);
 
   // Only the section's instructor (or registrar override via route) may grade
-  if (enr.classSection.instructorId !== BigInt(gradedBy)) {
+  if (enr.classSection.instructorId !== toBigInt(gradedBy)) {
     throw ApiError.forbidden('NOT_INSTRUCTOR', 'Only the section instructor may enter grades');
   }
   if (enr.classSection.status === 'closed') {
@@ -59,19 +60,19 @@ async function enterGrade({ enrollmentId, assessmentId, score, gradedBy }) {
   return prisma.grade.upsert({
     where: {
       enrollmentId_assessmentId: {
-        enrollmentId: BigInt(enrollmentId),
+        enrollmentId: toBigInt(enrollmentId),
         assessmentId: Number(assessmentId),
       },
     },
     create: {
-      enrollmentId: BigInt(enrollmentId),
+      enrollmentId: toBigInt(enrollmentId),
       assessmentId: Number(assessmentId),
       score: Number(score),
-      gradedById: BigInt(gradedBy),
+      gradedById: toBigInt(gradedBy),
     },
     update: {
       score: Number(score),
-      gradedById: BigInt(gradedBy),
+      gradedById: toBigInt(gradedBy),
       gradedAt: new Date(),
     },
   });
@@ -89,7 +90,7 @@ async function bulkEnterGrades({ assessmentId, entries, gradedBy }) {
     include: { classSection: { select: { instructorId: true, status: true } } },
   });
   if (!assessment) throw ApiError.notFound('ASSESSMENT_NOT_FOUND');
-  if (assessment.classSection.instructorId !== BigInt(gradedBy)) {
+  if (assessment.classSection.instructorId !== toBigInt(gradedBy)) {
     throw ApiError.forbidden('NOT_INSTRUCTOR');
   }
 
@@ -98,19 +99,19 @@ async function bulkEnterGrades({ assessmentId, entries, gradedBy }) {
       prisma.grade.upsert({
         where: {
           enrollmentId_assessmentId: {
-            enrollmentId: BigInt(e.enrollmentId),
+            enrollmentId: toBigInt(e.enrollmentId),
             assessmentId: Number(assessmentId),
           },
         },
         create: {
-          enrollmentId: BigInt(e.enrollmentId),
+          enrollmentId: toBigInt(e.enrollmentId),
           assessmentId: Number(assessmentId),
           score: Number(e.score),
-          gradedById: BigInt(gradedBy),
+          gradedById: toBigInt(gradedBy),
         },
         update: {
           score: Number(e.score),
-          gradedById: BigInt(gradedBy),
+          gradedById: toBigInt(gradedBy),
           gradedAt: new Date(),
         },
       }),
@@ -125,7 +126,7 @@ async function bulkEnterGrades({ assessmentId, entries, gradedBy }) {
  */
 async function finalizeGrade({ enrollmentId, finalizedBy, isCorrection = false }) {
   const enr = await prisma.enrollment.findUnique({
-    where: { id: BigInt(enrollmentId) },
+    where: { id: toBigInt(enrollmentId) },
     include: {
       classSection: {
         include: {
@@ -167,18 +168,18 @@ async function finalizeGrade({ enrollmentId, finalizedBy, isCorrection = false }
   // Append-only: always create a new row; isCorrection marks overrides
   const finalGrade = await prisma.finalGrade.create({
     data: {
-      enrollmentId: BigInt(enrollmentId),
+      enrollmentId: toBigInt(enrollmentId),
       numericGrade: numeric,
       letterGrade: tier.letter,
       gpaPoints: tier.points,
       isCorrection,
-      finalizedById: BigInt(finalizedBy),
+      finalizedById: toBigInt(finalizedBy),
     },
   });
 
   // Flip enrollment status to terminal
   await prisma.enrollment.update({
-    where: { id: BigInt(enrollmentId) },
+    where: { id: toBigInt(enrollmentId) },
     data: { status: passing ? 'completed' : 'failed' },
   });
 
@@ -195,7 +196,7 @@ async function computeSemesterRecord(studentId, semesterId) {
   const rows = await prisma.finalGrade.findMany({
     where: {
       enrollment: {
-        studentId: BigInt(studentId),
+        studentId: toBigInt(studentId),
         classSection: { semesterId: Number(semesterId) },
         status: { in: ['completed', 'failed'] },
       },
@@ -219,7 +220,7 @@ async function computeSemesterRecord(studentId, semesterId) {
 
   // Cumulative across all prior semesters + this one
   const priorRecords = await prisma.academicRecord.findMany({
-    where: { studentId: BigInt(studentId), semesterId: { not: Number(semesterId) } },
+    where: { studentId: toBigInt(studentId), semesterId: { not: Number(semesterId) } },
   });
   const cumulative = computeCumulativeGpa([
     ...priorRecords.map((p) => ({ semesterGpa: Number(p.semesterGpa), creditsAttempted: p.creditsAttempted })),
@@ -229,12 +230,12 @@ async function computeSemesterRecord(studentId, semesterId) {
   return prisma.academicRecord.upsert({
     where: {
       studentId_semesterId: {
-        studentId: BigInt(studentId),
+        studentId: toBigInt(studentId),
         semesterId: Number(semesterId),
       },
     },
     create: {
-      studentId: BigInt(studentId),
+      studentId: toBigInt(studentId),
       semesterId: Number(semesterId),
       semesterGpa,
       cumulativeGpa: cumulative,
@@ -254,14 +255,14 @@ async function computeSemesterRecord(studentId, semesterId) {
 /** Full transcript for a student (all semesters). */
 async function transcript(studentId) {
   const records = await prisma.academicRecord.findMany({
-    where: { studentId: BigInt(studentId) },
+    where: { studentId: toBigInt(studentId) },
     include: { semester: { select: { code: true, name: true, startDate: true, endDate: true } } },
     orderBy: { semester: { startDate: 'asc' } },
   });
 
   const courseRows = await prisma.enrollment.findMany({
     where: {
-      studentId: BigInt(studentId),
+      studentId: toBigInt(studentId),
       status: { in: ['completed', 'failed'] },
     },
     include: {
